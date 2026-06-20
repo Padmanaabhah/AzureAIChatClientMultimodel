@@ -1,0 +1,146 @@
+﻿@page "/"
+@page "/chat"
+@using Microsoft.Extensions.AI
+
+<PageTitle>Home</PageTitle>
+<ChatMessageWrapper>
+    @foreach (ChatMessage m in history)
+    {
+        if (m.Role == ChatRole.Assistant)
+        {
+            @foreach (AIContent content in m.Contents)
+            {
+               if (content is TextContent textContent)
+                {
+                    <AssistantMessage>
+                        <MarkdownText Text="@textContent.Text" />
+                    </AssistantMessage>
+                } 
+            }
+        }
+        else if(m.Role == ChatRole.User)
+        {
+            @foreach (AIContent content in m.Contents)
+            {
+                if (content is TextContent textContent)
+                {
+                    <UserMessage>
+                        <MarkdownText Text="@textContent.Text" />
+                    </UserMessage>
+                }
+                if (content is DataContent dataContent)
+                {
+                    <UserMessage>
+                        <img src="data:@dataContent.MediaType;base64,@dataContent.Base64Data" />
+                    </UserMessage>
+                }
+            }
+        }
+    }
+    <LoadingIndicator IsLoading="@isLoading" StreamingText="@streamingText" />
+</ChatMessageWrapper>
+<ChatInput OnSendMessage="HandleSendMessage" 
+    IsLoading="@isLoading" OnFileAttachment="GetFileData"/>
+
+@code {
+    string? streamingText;
+    private IChatClient ai;
+    private byte[]? pendingImageBytes;
+    private string? pendingImageMediaType;
+    
+    List<ChatMessage> history = new List<ChatMessage>();
+
+    public Chat(IChatClient client)
+    {
+        ai = client;        
+    }
+
+    bool isLoading = false;
+    protected override async Task OnInitializedAsync()
+    {
+        isLoading = true;
+        ChatMessage systemMessage = new ChatMessage(ChatRole.Assistant, "You are a helpful assistant.");
+        history.Add(systemMessage);
+        _ = await ai.GetResponseAsync(history);
+        isLoading = false;
+    }
+
+    private async Task HandleSendMessage(string message)
+    {
+        var trimmedMessage = message?.Trim() ?? string.Empty;
+        var hasPendingImage = pendingImageBytes is not null && !string.IsNullOrWhiteSpace(pendingImageMediaType);
+
+        if (string.IsNullOrWhiteSpace(trimmedMessage) && !hasPendingImage)
+        {
+            return;
+        }
+
+        isLoading = true;
+
+        ChatMessage chatMessage = hasPendingImage
+            ? new ChatMessage(
+                ChatRole.User,
+                [
+                    new TextContent(trimmedMessage),
+                    new DataContent(pendingImageBytes!, pendingImageMediaType!)
+                ])
+            : new ChatMessage(ChatRole.User, trimmedMessage);
+
+        history.Add(chatMessage);
+
+        // ChatResponse response = await ai.GetResponseAsync(history);
+        // history.Add(response.Messages[0]);
+         
+        TextContent responseText = new(text: "");
+        ChatMessage currentResponseMessage = new(ChatRole.Assistant, [responseText]);
+
+        await foreach (ChatResponseUpdate chunk in ai.GetStreamingResponseAsync(history))
+        {
+            history.AddMessages(chunk, filter: (AIContent c) => c is not TextContent);
+            responseText.Text += chunk.Text;
+            streamingText = responseText.Text;
+            StateHasChanged();
+            await Task.Delay(millisecondsDelay:1); // Simulate delay for better streaming effect
+        }
+         
+         
+        history.Add(currentResponseMessage);
+
+
+
+        pendingImageBytes = null;
+        pendingImageMediaType = null;
+        isLoading = false;
+    }
+
+    private void HandleSendImage(byte[] imageBytes, string mediaType)
+    {
+        pendingImageBytes = imageBytes;
+        pendingImageMediaType = mediaType;
+
+        ChatMessage chatMessage = new ChatMessage(ChatRole.User, [new DataContent(imageBytes, mediaType)]); 
+        history.Add(chatMessage);
+    }
+
+    private async Task GetFileData(InputFileChangeEventArgs e)
+    {
+        isLoading = true;
+
+        if (e is null)
+        {
+            isLoading = false;
+            return;
+        }
+
+        var file = e.File;
+        var fileContent = new StreamContent(file.OpenReadStream(maxAllowedSize: 10 * 1024 * 1024));
+
+        using var ms = new MemoryStream();
+
+        await fileContent.CopyToAsync(ms);
+        var imgBytes = ms.ToArray();
+
+        HandleSendImage(imgBytes, file.ContentType);
+        isLoading = false;
+    } 
+}

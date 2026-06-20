@@ -1,4 +1,6 @@
-﻿@page "/agent"
+﻿@page "/"
+@page "/agent"
+@using Microsoft.Extensions.AI
 @using MyFirstChatUI.Components.Listing
 @using MyFirstChatUI.Models
 @inject CoffeeData CoffeeDataService
@@ -18,10 +20,33 @@
     private bool isLoading = false;
     private List<CardData> Cards = [];
 
+    private IChatClient ai;
+
+    public BasicAgent(IChatClient client)
+    {
+        ai = client;
+    }
+
+
     private async Task LoadData()
     {
         isLoading = true;
         StateHasChanged();
+
+        ChatMessage systemMessage = new ChatMessage(ChatRole.System, agentPrompt);
+        var markDownContent = await CoffeeDataService.ReadMarkdownFilesAsync();
+        foreach (var content in markDownContent)
+        { 
+            ChatMessage userMessage = new ChatMessage(ChatRole.User, content);
+            var response = await ai.GetResponseAsync<CardData>([systemMessage, userMessage]);
+            response.TryGetResult(out CardData? result);
+
+            if (result is CardData { Description: not null})
+            {
+                Cards.Add(result);
+                StateHasChanged();
+            }
+        }
         
         isLoading = false;
     }
